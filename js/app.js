@@ -244,6 +244,8 @@ const STATE_SYNC_DELAY = 750;
 const ACTION_POLL_INTERVAL = 1000;
 let stateSyncTimer = null;
 let stateSyncTimerDelay = null;
+let stateSyncInFlight = false;
+let stateSyncQueuedDuringFlight = false;
 let runoutPhaseTimer = null;
 let chipTransferFinishTimer = null;
 let newRoundCountdownTimer = null;
@@ -1969,6 +1971,16 @@ async function fetchPendingRemoteAction(turnToken) {
 }
 
 async function sendTableState() {
+	// Overlapping POSTs can arrive at the backend out of order (its latency is not
+	// consistent), letting a slower, stale request overwrite a fresher one. Serialize
+	// sends instead: if one is already in flight, remember to resync once it settles.
+	if (stateSyncInFlight) {
+		stateSyncQueuedDuringFlight = true;
+		return;
+	}
+
+	stateSyncInFlight = true;
+	stateSyncQueuedDuringFlight = false;
 	const payload = {
 		tableId: tableId,
 		view: buildSyncView(gameState, notifArr.slice(0, MAX_ITEMS)),
@@ -1985,7 +1997,13 @@ async function sendTableState() {
 		}
 	} catch (error) {
 		logFlow("state sync failed", error);
-		queueStateSync();
+		stateSyncQueuedDuringFlight = true;
+	} finally {
+		stateSyncInFlight = false;
+		if (stateSyncQueuedDuringFlight) {
+			stateSyncQueuedDuringFlight = false;
+			queueStateSync(0);
+		}
 	}
 }
 
